@@ -612,11 +612,28 @@ public final class RTree<T, S extends Geometry> {
             if (nodeAndEntries.node().isPresent() && nodeAndEntries.node().get() == root.get())
                 return this;
             else
-                return new RTree<T, S>(nodeAndEntries.node(),
+                return shrinkRootIfNeeded(new RTree<T, S>(nodeAndEntries.node(),
                         size - nodeAndEntries.countDeleted() - nodeAndEntries.entriesToAdd().size(),
-                        context).add(nodeAndEntries.entriesToAdd());
+                        context).add(nodeAndEntries.entriesToAdd()));
         } else
             return this;
+    }
+
+    /**
+     * Collapses a single-child chain of internal root nodes so that the root
+     * never remains an internal node with only one child. Redistribution of the
+     * entries of underflowing nodes can otherwise leave the root (and a chain
+     * of ancestors just beneath it) with a single child after a deletion.
+     */
+    private RTree<T, S> shrinkRootIfNeeded(RTree<T, S> tree) {
+        Node<T, S> node = tree.root.orElse(null);
+        while (node instanceof NonLeaf && node.count() == 1) {
+            node = ((NonLeaf<T, S>) node).child(0);
+        }
+        if (node == null || node == tree.root.get()) {
+            return tree;
+        }
+        return create(of(node), tree.size(), context);
     }
 
     /**

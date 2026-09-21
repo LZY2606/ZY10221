@@ -146,6 +146,11 @@ tree = tree.delete(entry);
 *Important note:* being an immutable data structure, calling ```tree.delete(item, geometry)``` does nothing to ```tree```, 
 it returns a new ```RTree``` without the deleted item. Make sure you use the result of the ```delete```!
 
+Deleting copies the affected root-to-leaf path and reuses untouched subtrees, so previously obtained versions of the tree stay intact.
+When a deletion (and the redistribution of underflowed nodes) leaves the root as an internal node with a single child, the height contracts by collapsing that single-child chain at the root; this keeps the tree shape to the standard R-tree invariant that an internal root has at least two children and costs at most one extra descent (already within the O(log n) delete bound).
+Deleting the last entry yields an empty tree (no root, depth 0).
+The persistence semantics, structural invariants and the fixed-seed state machine tests that cover them are described in [docs/state-machine-testing.md](docs/state-machine-testing.md).
+
 ### Geospatial geometries (lats and longs)
 To handle wraparounds of longitude values on the earth (180/-180 boundary trickiness) there are special factory methods in the `Geometries` class. If you want to do geospatial searches then you should use these methods to build `Point`s and `Rectangle`s:
 
