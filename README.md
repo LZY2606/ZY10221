@@ -146,6 +146,15 @@ tree = tree.delete(entry);
 *Important note:* being an immutable data structure, calling ```tree.delete(item, geometry)``` does nothing to ```tree```, 
 it returns a new ```RTree``` without the deleted item. Make sure you use the result of the ```delete```!
 
+#### Delete semantics, underflow and height contraction
+When an entry is deleted and a leaf is left with fewer than `minChildren` entries, that leaf is *dissolved*: its surviving entries are released and reinserted from the root. Internal nodes are treated the same way: if deleting leaves a non-leaf node with fewer than `minChildren` children, that node is dissolved too, and the surviving entries of its whole subtree are released for reinsertion. Consequently every non-root internal node always holds between `minChildren` and `maxChildren` children, node minimum bounding rectangles are always tight (recomputed from the surviving children), and no empty or single-child internal node is retained.
+
+After the reinsertion a non-leaf root can occasionally be left with exactly one non-leaf child. Such a root adds height without adding branching, so it is repeatedly contracted away until the root is a leaf or has at least two children. The empty tree (all entries deleted) has no root and height zero.
+
+* **Persistence:** add and delete never mutate an existing tree; every operation returns a new version that shares unchanged subtrees with its predecessors. Old versions remain fully usable and are not affected by later operations.
+* **Complexity:** an ordinary add/delete is `O(log n)` on average and `O(n)` worst case. A delete that dissolves subtrees reinserts their surviving entries; in the pathological case (cascading underflow across most of the tree) this is `O(n)` for that single delete, the standard R-tree reinsertion trade-off. Search is `O(log n)` average and `O(n)` worst case; the contracted height keeps the average cost low after large deletions.
+* **Compatibility:** the public method signatures and supported platforms are unchanged; the observable differences versus the previous build are that post-delete trees no longer retain redundant single-child internal nodes/height and that `delete(entry, true)` removes every matching occurrence even when matches are surfaced through subtree dissolution (previously some reinserted matches could survive).
+
 ### Geospatial geometries (lats and longs)
 To handle wraparounds of longitude values on the earth (180/-180 boundary trickiness) there are special factory methods in the `Geometries` class. If you want to do geospatial searches then you should use these methods to build `Point`s and `Rectangle`s:
 
@@ -348,6 +357,19 @@ Note that serialization uses an optional dependency on `flatbuffers`. Add the fo
     <optional>true</optional>
 </dependency>
 ```
+
+## Persistence state-machine tests
+The immutable add/delete paths are covered by fixed-seed state-machine tests under `src/test/java/com/github/davidmoten/rtree/statemachine`. For each run the generator produces a deterministic history of `add`, `delete` (one and all), delete-all, rectangle `search`, `nearest`, `size` and FlatBuffers serialization round-trip actions. Values are allowed to repeat and geometries are drawn from a small grid so they frequently coincide, overlap or merely touch at an edge.
+
+Every produced version is checked against an independent reference multiset:
+
+* `size()` and the entry multiset returned by each search must match the reference;
+* `nearest` results are compared as multisets of `(entry, distance)` against the *feasible* answer set, so equal-distance ties impose no ordering promise;
+* searches are also collected through several small backpressure `request(n)` batches and the merged result must equal a one-shot request;
+* internal invariants are asserted on every version: each non-root internal node holds between `minChildren` and `maxChildren` children, every node MBR is the tight minimum bounding rectangle of its children, leaf-entry count equals `size()`, and the empty tree has no root and height zero;
+* random earlier snapshots are revisited each step to prove persistence (a later mutation never changes an old version).
+
+On failure the tests print the seed and the minimal replayable action prefix (found by a shrinker that never merges duplicate entries, so duplicate-sensitive defects are preserved). Non-finite coordinates (`NaN`/infinity) are covered by a separate contract test that pins down the existing geometry behaviour rather than letting the reference define new semantics. The tests require no network, real clock waits or filesystem ordering.
 
 ## Serialization example
 

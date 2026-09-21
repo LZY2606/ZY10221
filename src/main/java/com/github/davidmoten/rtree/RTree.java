@@ -607,16 +607,104 @@ public final class RTree<T, S extends Geometry> {
      * @return a new immutable R-tree without one instance of the specified entry
      */
     public RTree<T, S> delete(Entry<? extends T, ? extends S> entry, boolean all) {
-        if (root.isPresent()) {
-            NodeAndEntries<T, S> nodeAndEntries = root.get().delete(entry, all);
-            if (nodeAndEntries.node().isPresent() && nodeAndEntries.node().get() == root.get())
-                return this;
-            else
-                return new RTree<T, S>(nodeAndEntries.node(),
-                        size - nodeAndEntries.countDeleted() - nodeAndEntries.entriesToAdd().size(),
-                        context).add(nodeAndEntries.entriesToAdd());
-        } else
+        return deleteInternal(entry, all, true);
+    }
+
+    /**
+     * Test-only delete that deliberately skips root single-child contraction.
+     * It performs the same entry deletion and reinsertion as
+     * {@link #delete(Entry, boolean)} but leaves any single-child non-leaf
+     * root in place, modelling the pre-contraction behaviour that the
+     * state-machine tests must detect. Not part of the public API.
+     *
+     * @param value
+     *            value to match
+     * @param geometry
+     *            geometry to match
+     * @param all
+     *            true to delete every matching occurrence, false for one
+     * @return the deleted tree without root contraction
+     */
+    RTree<T, S> deleteWithoutRootContraction(T value, S geometry, boolean all) {
+        return deleteInternal(context.factory().createEntry(value, geometry), all, false);
+    }
+
+    /**
+     * Shared delete implementation.
+     *
+     * @param entry
+     *            entry to delete
+     * @param all
+     *            true deletes every matching occurrence, false only one
+     * @param contract
+     *            true collapses a redundant single-child non-leaf root once
+     *            the delete and reinsertion settle
+     * @return the resulting immutable tree
+     */
+    private RTree<T, S> deleteInternal(Entry<? extends T, ? extends S> entry, boolean all,
+            boolean contract) {
+        if (!root.isPresent()) {
             return this;
+        }
+        NodeAndEntries<T, S> nodeAndEntries = root.get().delete(entry, all);
+        if (nodeAndEntries.node().isPresent() && nodeAndEntries.node().get() == root.get()) {
+            return this;
+        }
+        RTree<T, S> tree = new RTree<T, S>(nodeAndEntries.node(),
+                size - nodeAndEntries.countDeleted() - nodeAndEntries.entriesToAdd().size(),
+                context).add(nodeAndEntries.entriesToAdd());
+        if (all) {
+            // Entries released by dissolved subtrees are reinserted above;
+            // some may themselves match the entry being deleted (a dissolved
+            // subtree can hold more matching entries than the single descent
+            // removed). With all == true every match must go, so keep
+            // deleting until the tree stops changing.
+            while (true) {
+                NodeAndEntries<T, S> again = tree.root.isPresent()
+                        ? tree.root.get().delete(entry, true)
+                        : null;
+                if (again == null || (again.node().isPresent()
+                        && again.node().get() == tree.root.get())) {
+                    break;
+                }
+                tree = new RTree<T, S>(again.node(),
+                        tree.size - again.countDeleted() - again.entriesToAdd().size(), context)
+                                .add(again.entriesToAdd());
+            }
+        }
+        return contract ? contractRoot(tree) : tree;
+    }
+
+    /**
+     * Contracts a single-child non-leaf root down to its only child.
+     *
+     * <p>
+     * Deletion and the reinsertion of entries released by dissolved subtrees
+     * can leave a non-leaf root with exactly one non-leaf child. Such a root
+     * adds height without adding branching and represents the same entries as
+     * the child beneath it, so it is removed and the child becomes the root.
+     * The contraction is repeated because a single delete can collapse several
+     * levels of underflowed nodes. A root that is a leaf, or a non-leaf root
+     * with zero (empty tree) or more than one child, is returned unchanged.
+     *
+     * @param tree
+     *            tree whose root may carry a redundant single-child chain
+     * @return the tree with redundant single-child non-leaf roots removed
+     */
+    private RTree<T, S> contractRoot(RTree<T, S> tree) {
+        Optional<? extends Node<T, S>> candidate = tree.root;
+        while (candidate.isPresent() && !(candidate.get() instanceof Leaf)) {
+            NonLeaf<T, S> nonLeaf = (NonLeaf<T, S>) candidate.get();
+            if (nonLeaf.count() != 1) {
+                break;
+            }
+            candidate = Optional.of(nonLeaf.child(0));
+        }
+        if (candidate == tree.root) {
+            return tree;
+        } else {
+            return RTree.create(candidate, tree.size, tree.context);
+        }
     }
 
     /**
